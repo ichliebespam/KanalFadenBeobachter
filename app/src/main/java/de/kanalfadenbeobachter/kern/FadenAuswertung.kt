@@ -9,7 +9,7 @@ fun pruefsumme256(wert: String): String = MessageDigest.getInstance("SHA-256").d
 data class FadenAdresse(val brett: String, val kennung: String) {
     val schluessel get() = "$brett/res$kennung"
     val adresse get() = "https://kohlchan.net/$brett/res/$kennung.html"
-    val ordner get() = "res$kennung"
+    val ordner get() = "${brett}_res$kennung"
     companion object {
         fun auswerten(wert: String): FadenAdresse {
             val u = URI(wert.trim())

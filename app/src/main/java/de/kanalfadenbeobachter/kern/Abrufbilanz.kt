@@ -35,6 +35,6 @@ object Uebertragungsangaben {
 object Fadenaufnahme {
     fun pruefen(faden:FadenAdresse,vorhandene:List<FadenAdresse>) {
         require(vorhandene.none {it.schluessel==faden.schluessel}) {"${faden.ordner}: Adresse bereits vorhanden, möglicherweise unter den entfernten Fäden."}
-        require(vorhandene.none {it.kennung==faden.kennung}) {"${faden.ordner}: Diese Nummer existiert bereits auf einem anderen Brett; Ordnerüberschneidung verhindert."}
+        require(vorhandene.none {it.kennung==faden.kennung}) {"${faden.ordner}: Diese Nummer existiert bereits auf einem anderen Brett."}
     }
 }
