@@ -72,7 +72,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
             throw e
         } finally {laufendeAnfragen.remove(schluessel,aufruf);abbruch.cancelAndJoin()}
     }
-    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.4 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
+    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.5 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
     private fun wiederholungMillisekunden(r:Response):Long {
         val h=r.header("Retry-After") ?: return 0
         return h.toLongOrNull()?.coerceIn(0,86400)?.times(1000) ?: runCatching { (java.time.ZonedDateTime.parse(h,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()-System.currentTimeMillis()).coerceIn(0,86400000) }.getOrDefault(0)

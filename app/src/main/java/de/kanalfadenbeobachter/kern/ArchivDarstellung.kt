@@ -1,9 +1,12 @@
 package de.kanalfadenbeobachter.kern
 
 object ArchivDarstellung {
+    /** Dateipfade werden als URL-Pfade kodiert; HTML-Escaping erfolgt anschließend. */
+    fun medienLink(pfad:String,vorherig:Boolean=false):String =
+        java.net.URI(null,null,(if(vorherig) "../../" else "../")+pfad,null).toASCIIString()
+
     private fun schuetzen(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;")
     fun darstellen(s: Fadenstand, abgerufen: String, vorherig: Boolean = false): String {
-        val vorsilbe = if (vorherig) "../../" else "../"
         return buildString {
             append("<!doctype html><html lang=\"de\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
             append("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'\">")
@@ -19,7 +22,7 @@ object ArchivDarstellung {
                 }
                 append(nachricht.body().html())
                 p.medien.forEach { m ->
-                    val pfad = schuetzen(vorsilbe + m.pfad)
+                    val pfad = schuetzen(medienLink(m.pfad,vorherig))
                     append("<figure>")
                     when {
                         m.medientyp.startsWith("image/") -> append("<a href=\"$pfad\"><img loading=\"lazy\" src=\"$pfad\" alt=\"${schuetzen(m.ursprungsname)}\"></a>")
