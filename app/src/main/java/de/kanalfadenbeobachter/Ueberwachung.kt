@@ -26,14 +26,25 @@ object Benachrichtigungen {
     fun anzeigen(umgebung:Context,kennung:Int,text:String) {
         runCatching {umgebung.getSystemService(NotificationManager::class.java).notify(kennung,erzeugen(umgebung,text))}
     }
-    fun hintergrund(umgebung:Context,laeuft:Boolean=false) {
+    @Volatile var hintergrundLaeuft=false
+    @Synchronized fun aktualisieren(umgebung:Context) {
+        if(Ueberwachungsdienst.laeuft) {
+            val anzahl=umgebung.anwendung.datenbank.faedenLesen().count {it.aktiv}
+            val text=if(anzahl==0) "Keine aktiven Fäden · Sitzung wartet" else
+                "Aktive Sitzung · $anzahl Fäden\n${umgebung.anwendung.abrufwerk.fortschritt}"
+            anzeigen(umgebung,41,text)
+        }
+        hintergrund(umgebung)
+    }
+    @Synchronized fun hintergrund(umgebung:Context) {
         val anwendung=umgebung.anwendung
         if(!anwendung.einstellungen.getBoolean("periodic",false))return
-        val text=if(laeuft) "Hintergrundabruf läuft\n${anwendung.abrufwerk.fortschritt}" else {
+        val anzahl=anwendung.datenbank.faedenLesen().count {it.aktiv}
+        val text=if(anzahl==0) "Keine aktiven Fäden · Hintergrundplan vorgemerkt"
+        else if(hintergrundLaeuft) "Hintergrundabruf läuft · $anzahl Fäden\n${anwendung.abrufwerk.fortschritt}" else {
             val ziel=anwendung.einstellungen.getLong("naechsterHintergrundabruf",0)
             val zuletzt=anwendung.einstellungen.getLong("letzterHintergrundabruf",0)
             val ergebnis=anwendung.einstellungen.getString("letzterHintergrundzustand","").orEmpty()
-            val anzahl=anwendung.datenbank.faedenLesen().count {it.aktiv}
             val zeit=if(ziel>System.currentTimeMillis())"Nächster Abruf frühestens ab ${Zeitangaben.uhrzeit(ziel)}" else "Nächster Abruf: warte auf Android"
             "Hintergrundplan aktiv · $anzahl Fäden\n$zeit · Android bestimmt den Zeitpunkt" +
                 if(zuletzt>0) "\nLetzte Ausführung: ${Zeitangaben.uhrzeit(zuletzt)} · $ergebnis" else ""
@@ -101,7 +112,7 @@ class Ueberwachungsdienst:Service() {
                     val zustandsauftrag=launch {
                         var takte=0
                         while(isActive) {
-                            Benachrichtigungen.anzeigen(this@Ueberwachungsdienst,41,anwendung.abrufwerk.fortschritt)
+                            Benachrichtigungen.aktualisieren(this@Ueberwachungsdienst)
                             delay(2000)
                             if(++takte%150==0)wachhaltesperre?.acquire(10*60*1000L)
                         }
@@ -110,7 +121,7 @@ class Ueberwachungsdienst:Service() {
                         do {
                             anwendung.abrufwerk.naechsterAbruf=0
                             anwendung.abrufwerk.abrufAusfuehren(if(einmalig)"Einzelabruf" else "Intervallabruf")
-                            if(einmalig || anwendung.datenbank.faedenLesen().none {it.aktiv})break
+                            if(einmalig)break
                             anwendung.abrufwerk.naechsterAbruf=android.os.SystemClock.elapsedRealtime()+anwendung.einstellungen.getInt("seconds",60).coerceAtLeast(10)*1000L
                             while(android.os.SystemClock.elapsedRealtime()<anwendung.abrufwerk.naechsterAbruf) {
                                 delay(minOf(1000L,(anwendung.abrufwerk.naechsterAbruf-android.os.SystemClock.elapsedRealtime()).coerceAtLeast(1)))
@@ -139,9 +150,10 @@ class Hintergrundarbeit(umgebung:Context,parameter:WorkerParameters):CoroutineWo
         val anwendung=applicationContext.anwendung
         if(!anwendung.einstellungen.getBoolean("periodic",false))return@coroutineScope Result.success()
         if(Ueberwachungsdienst.laeuft)return@coroutineScope Result.retry()
+        Benachrichtigungen.hintergrundLaeuft=true
         val zustandsauftrag=launch {
             while(isActive && anwendung.einstellungen.getBoolean("periodic",false)) {
-                Benachrichtigungen.hintergrund(applicationContext,true)
+                Benachrichtigungen.hintergrund(applicationContext)
                 delay(2000)
             }
         }
@@ -157,6 +169,7 @@ class Hintergrundarbeit(umgebung:Context,parameter:WorkerParameters):CoroutineWo
         catch(fehler:Exception) {ergebnistext="Fehlgeschlagen";erneutVersuchen=true;anwendung.datenbank.protokoll("FEHLER","Hintergrundabruf: ${fehler.message}");Result.retry()}
         finally {
             withContext(NonCancellable) {zustandsauftrag.cancelAndJoin()}
+            Benachrichtigungen.hintergrundLaeuft=false
             if(anwendung.einstellungen.getBoolean("periodic",false)) {
                 val jetzt=System.currentTimeMillis()
                 val abstand=if(erneutVersuchen)minOf(18000000L,30000L*(1L shl runAttemptCount.coerceIn(0,10))) else anwendung.einstellungen.getInt("periodicMinutes",15).coerceAtLeast(15)*60000L

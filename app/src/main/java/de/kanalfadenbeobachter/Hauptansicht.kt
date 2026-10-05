@@ -121,12 +121,13 @@ class Hauptansicht:Activity() {
         if(fehler.isNotEmpty())AlertDialog.Builder(this).setTitle("Adressen nicht übernommen")
             .setMessage(fehler.joinToString("\n\n")+if(hinzugefuegt>0)"\n\n$hinzugefuegt neue Fäden hinzugefügt." else "")
             .setPositiveButton("Schließen",null).show()
+        if(hinzugefuegt>0)anwendung.faedenGeaendert()
         erneuern()
     }
     private fun einfuegen() {val zwischenablage=getSystemService(ClipboardManager::class.java).primaryClip;if(zwischenablage!=null && zwischenablage.itemCount>0)adressenHinzufuegen(zwischenablage.getItemAt(0).coerceToText(this).toString()) else nachricht("Zwischenablage ist leer")}
     private fun ausgewaehlteEntfernen() {
         if(ausgewaehlt.isEmpty()){nachricht("Zuerst Fäden markieren");return}
-        AlertDialog.Builder(this).setTitle("${ausgewaehlt.size} Fäden entfernen?").setMessage("Beendet die Überwachung. Gespeicherte Fassungen und Medien bleiben erhalten.").setPositiveButton("Entfernen"){_,_->ausgewaehlt.forEach {anwendung.datenbank.aktiv(it,false);anwendung.datenbank.protokoll("HINWEIS","$it aus Überwachung entfernt")};ausgewaehlt.clear();erneuern()}.setNegativeButton("Abbrechen",null).show()
+        AlertDialog.Builder(this).setTitle("${ausgewaehlt.size} Fäden entfernen?").setMessage("Beendet die Überwachung. Gespeicherte Fassungen und Medien bleiben erhalten.").setPositiveButton("Entfernen"){_,_->ausgewaehlt.forEach {anwendung.datenbank.aktiv(it,false);anwendung.datenbank.protokoll("HINWEIS","$it aus Überwachung entfernt")};ausgewaehlt.clear();anwendung.faedenGeaendert();erneuern()}.setNegativeButton("Abbrechen",null).show()
     }
     private fun bereit():Boolean {
         if(anwendung.einstellungen.getString("tree",null)==null){nachricht("Bitte zuerst einen Archivordner wählen");ordner();return false}
@@ -169,7 +170,7 @@ class Hauptansicht:Activity() {
             if(anwendung.einstellungen.getBoolean("periodic",false))Ueberwachung.regelmaessig(this)
         }.setNegativeButton("Schließen",null).show()
     }
-    private fun entfernteWiederherstellen() {val eintraege=anwendung.datenbank.faedenLesen().filter {!it.aktiv};if(eintraege.isEmpty()){nachricht("Keine archivierten Fäden");return};AlertDialog.Builder(this).setTitle("Faden reaktivieren").setItems(eintraege.map {"${it.faden.ordner} · ${it.titel}"}.toTypedArray()){_,i->anwendung.datenbank.aktiv(eintraege[i].schluessel,true);erneuern()}.show()}
+    private fun entfernteWiederherstellen() {val eintraege=anwendung.datenbank.faedenLesen().filter {!it.aktiv};if(eintraege.isEmpty()){nachricht("Keine archivierten Fäden");return};AlertDialog.Builder(this).setTitle("Faden reaktivieren").setItems(eintraege.map {"${it.faden.ordner} · ${it.titel}"}.toTypedArray()){_,i->anwendung.datenbank.aktiv(eintraege[i].schluessel,true);anwendung.faedenGeaendert();erneuern()}.show()}
     @Deprecated("Vorgegebene Android-Schnittstelle der nativen Ansicht")
     override fun onActivityResult(anfrage:Int,ergebnis:Int,rueckgabe:Intent?) {
         super.onActivityResult(anfrage,ergebnis,rueckgabe)

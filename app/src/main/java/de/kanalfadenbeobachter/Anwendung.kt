@@ -7,6 +7,10 @@ class Anwendung:Application() {
     lateinit var archivspeicher:Archivspeicher; private set
     lateinit var abrufwerk:Abrufwerk; private set
     val einstellungen get()=getSharedPreferences("settings",0)
+    fun faedenGeaendert() {
+        abrufwerk.faedenGeaendert()
+        Benachrichtigungen.aktualisieren(this)
+    }
     override fun onCreate() {
         super.onCreate()
         datenbank=Datenbank(this);archivspeicher=Archivspeicher(this);abrufwerk=Abrufwerk(this)

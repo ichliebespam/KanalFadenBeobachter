@@ -14,7 +14,21 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 
 class HttpFehler(val antwortnummer:Int,val wiederholungMillisekunden:Long=0):IOException("HTTP $antwortnummer")
+private class FadenEntfernt:IOException("Faden aus Überwachung entfernt")
 class Abrufwerk(private val anwendung:Anwendung) {
+    private val laufendeAnfragen=java.util.concurrent.ConcurrentHashMap<String,Call>()
+    @Volatile private var aktuellerFaden:String?=null
+    fun faedenGeaendert() {
+        val aktive=anwendung.datenbank.faedenLesen().filter {it.aktiv}.map {it.schluessel}.toSet()
+        laufendeAnfragen.forEach { (schluessel,aufruf) -> if(schluessel !in aktive)aufruf.cancel() }
+        if(aktuellerFaden?.let {it !in aktive}==true) {
+            pruefzustand="Faden entfernt · übrige Fäden werden weiterbearbeitet"
+            uebertragungszustand=pruefzustand
+        }
+    }
+    private fun aktivPruefen(schluessel:String) {
+        if(anwendung.datenbank.fadenLesen(schluessel)?.aktiv!=true)throw FadenEntfernt()
+    }
     private val pruefsperre=Mutex(); private val mediensperre=Mutex()
     private val tabellensperre=Any()
     private val abrufsperre=Mutex()
@@ -28,6 +42,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
     val fortschritt:String get() {
         val zaehler=if(naechsterAbruf>0 && !pruefungLaeuft.get()) "Nächster Abruf in ${Zeitangaben.restsekunden(naechsterAbruf,android.os.SystemClock.elapsedRealtime())} Sekunden" else ""
         val meldung=when {
+        aktuellerFaden?.let {anwendung.datenbank.fadenLesen(it)?.aktiv!=true}==true -> "Faden entfernt · übrige Fäden werden weiterbearbeitet"
         mediumBeschaeftigt -> uebertragungszustand
         pruefungLaeuft.get() -> pruefzustand
         else -> uebertragungszustand.ifEmpty {pruefzustand}
@@ -45,10 +60,19 @@ class Abrufwerk(private val anwendung:Anwendung) {
     fun netzabrufAbbrechen() {verbindungsgrundlage.dispatcher.cancelAll()}
     private suspend fun <T> antwort(anfrage:Request, verarbeitung:suspend (Response)->T):T = coroutineScope {
         val aufruf=verbindung().newCall(anfrage)
+        val schluessel=requireNotNull(anfrage.tag(String::class.java))
+        laufendeAnfragen[schluessel]=aufruf
         val abbruch=launch(start=CoroutineStart.UNDISPATCHED) { try {awaitCancellation()} finally {aufruf.cancel()} }
-        try {withContext(Dispatchers.IO) { aufruf.execute().use {verarbeitung(it)} }} finally {abbruch.cancelAndJoin()}
+        try {
+            aktivPruefen(schluessel)
+            withContext(Dispatchers.IO) { aufruf.execute().use {aktivPruefen(schluessel);verarbeitung(it)} }
+        } catch(e:IOException) {
+            currentCoroutineContext().ensureActive()
+            if(aufruf.isCanceled())throw FadenEntfernt()
+            throw e
+        } finally {laufendeAnfragen.remove(schluessel,aufruf);abbruch.cancelAndJoin()}
     }
-    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.3 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
+    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.4 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
     private fun wiederholungMillisekunden(r:Response):Long {
         val h=r.header("Retry-After") ?: return 0
         return h.toLongOrNull()?.coerceIn(0,86400)?.times(1000) ?: runCatching { (java.time.ZonedDateTime.parse(h,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()-System.currentTimeMillis()).coerceIn(0,86400000) }.getOrDefault(0)
@@ -65,28 +89,39 @@ class Abrufwerk(private val anwendung:Anwendung) {
         var abgeschlossen=false
         try {
             uebertragungszustand=""
-            alleFaedenPruefen(bilanz)
-            while(einzelnesMediumLaden(bilanz))currentCoroutineContext().ensureActive()
+            val geprueft=mutableSetOf<String>()
+            while(true) {
+                currentCoroutineContext().ensureActive()
+                alleFaedenPruefen(bilanz,geprueft)
+                if(!einzelnesMediumLaden(bilanz)) {
+                    if(anwendung.datenbank.faedenLesen().any {it.aktiv && it.schluessel !in geprueft})continue
+                    break
+                }
+            }
             abgeschlossen=true
         } finally {
             try {
                 bilanz.meldung(bezeichnung,abgeschlossen)?.let {anwendung.datenbank.protokoll("BILANZ",it);uebertragungszustand=it}
-            } finally {abrufsperre.unlock()}
+            } finally {aktuellerFaden=null;abrufsperre.unlock()}
         }
     }
-    private suspend fun alleFaedenPruefen(bilanz:Abrufbilanz) {
+    private suspend fun alleFaedenPruefen(bilanz:Abrufbilanz,geprueft:MutableSet<String>) {
+        if(anwendung.datenbank.faedenLesen().none {it.aktiv && it.schluessel !in geprueft})return
         pruefsperre.lock()
         pruefungLaeuft.set(true)
         try {
             anwendung.archivspeicher.zugriffPruefen()
-            if(!netzzugriffErlaubt()) {pruefzustand="Warte auf erlaubtes Netzwerk";return}
-            for(t in anwendung.datenbank.faedenLesen().filter {it.aktiv}) {
+            if(!netzzugriffErlaubt()) {geprueft.addAll(anwendung.datenbank.faedenLesen().filter {it.aktiv}.map {it.schluessel});pruefzustand="Warte auf erlaubtes Netzwerk";return}
+            while(true) {
+                val t=anwendung.datenbank.faedenLesen().firstOrNull {it.aktiv && it.schluessel !in geprueft} ?: break
+                geprueft.add(t.schluessel)
+                aktuellerFaden=t.schluessel
                 currentCoroutineContext().ensureActive()
                 if(anwendung.einstellungen.getLong("retry:${t.schluessel}",0)>System.currentTimeMillis())continue
                 pruefzustand="Prüfe ${t.faden.ordner}"
                 anwendung.datenbank.status(t.schluessel,"Abruf …")
                 try {
-                    val anforderung=anfrage(t.faden.adresse).header("Accept","text/html")
+                    val anforderung=anfrage(t.faden.adresse).tag(String::class.java,t.schluessel).header("Accept","text/html")
                     if(t.pruefsumme.isNotEmpty()) {if(t.versionsmarke.isNotEmpty())anforderung.header("If-None-Match",t.versionsmarke);if(t.veraendert.isNotEmpty())anforderung.header("If-Modified-Since",t.veraendert)}
                     antwort(anforderung.build()) {r ->
                         when(r.code) {404 -> throw NichtGefunden();304 -> {anwendung.datenbank.status(t.schluessel,"Unverändert · ${uhrzeit()}");anwendung.datenbank.protokoll("HINWEIS","${t.faden.ordner}: unverändert · vom Anbieter bestätigt (HTTP 304)");return@antwort}}
@@ -96,6 +131,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
                             val ausgabe=java.io.ByteArrayOutputStream()
                             val puffer=ByteArray(32768)
                             while(ausgabe.size()<=16*1024*1024) {
+                                aktivPruefen(t.schluessel)
                                 currentCoroutineContext().ensureActive()
                                 val n=eingabe.read(puffer)
                                 if(n<0)break
@@ -153,7 +189,8 @@ class Abrufwerk(private val anwendung:Anwendung) {
                     wertetabelleSchreiben(t.schluessel)
                     anwendung.einstellungen.edit().remove("retry:${t.schluessel}").remove("failures:${t.schluessel}").apply()
                 } catch(e:CancellationException) {throw e}
-                catch(e:NichtGefunden) {anwendung.datenbank.aktiv(t.schluessel,false);anwendung.datenbank.status(t.schluessel,"404 · Überwachung beendet");anwendung.datenbank.protokoll("FEHLER","${t.faden.ordner}: 404, aus Überwachung entfernt. Archiv bleibt erhalten.")}
+                catch(e:FadenEntfernt) {anwendung.datenbank.protokoll("HINWEIS","${t.faden.ordner}: Abruf wegen Entfernung beendet")}
+                catch(e:NichtGefunden) {anwendung.datenbank.aktiv(t.schluessel,false);anwendung.faedenGeaendert();anwendung.datenbank.status(t.schluessel,"404 · Überwachung beendet");anwendung.datenbank.protokoll("FEHLER","${t.faden.ordner}: 404, aus Überwachung entfernt. Archiv bleibt erhalten.")}
                 catch(e:Exception) {
                     val fehlschlaege=anwendung.einstellungen.getInt("failures:${t.schluessel}",0)+1
                     val pause=maxOf((e as? HttpFehler)?.wiederholungMillisekunden ?: 0, minOf(3600000L,15000L*(1L shl minOf(fehlschlaege,8))))
@@ -177,7 +214,9 @@ class Abrufwerk(private val anwendung:Anwendung) {
         var begonnen=false
         try {
             val d=anwendung.datenbank.naechsterMedienauftrag() ?: return false
-            val t=anwendung.datenbank.fadenLesen(d.fadenschluessel) ?: return false
+            val t=anwendung.datenbank.fadenLesen(d.fadenschluessel) ?: return true
+            if(!t.aktiv)return true
+            aktuellerFaden=t.schluessel
             val alt=anwendung.archivspeicher.vorhandeneZuordnungen(t.faden.ordner)[d.adresse]
             val vorhanden=anwendung.archivspeicher.vorhandeneGroesse("${t.faden.ordner}/${d.pfad}",d.erwarteteGroesse.takeIf {it>0} ?: alt?.groesse ?: 0)
             if(vorhanden!=null) {
@@ -197,12 +236,13 @@ class Abrufwerk(private val anwendung:Anwendung) {
             mediumBeschaeftigt=true
             if(anwendung.einstellungen.getInt("zufallspause",3)==0)naechstesMedium=0
             while(android.os.SystemClock.elapsedRealtime()<naechstesMedium) {
+                if(anwendung.datenbank.fadenLesen(d.fadenschluessel)?.aktiv!=true)return true
                 val rest=Zeitangaben.restsekunden(naechstesMedium,android.os.SystemClock.elapsedRealtime())
                 uebertragungszustand="Zufällige Wartezeit: noch $rest Sekunden\nDanach: $titel\n$zusammenfassung"
                 delay(minOf(250L,(naechstesMedium-android.os.SystemClock.elapsedRealtime()).coerceAtLeast(1)))
             }
             currentCoroutineContext().ensureActive()
-            if(anwendung.datenbank.fadenLesen(d.fadenschluessel)?.aktiv!=true)return false
+            if(anwendung.datenbank.fadenLesen(d.fadenschluessel)?.aktiv!=true)return true
             begonnen=true
             uebertragungszustand="$titel\nVerbindung wird aufgebaut …\n$zusammenfassung"
             anwendung.datenbank.protokoll("MEDIUM","${t.faden.ordner}: Verbindung für $name wird aufgebaut")
@@ -213,7 +253,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
                 val versionsmarke=if(bestaetigung.exists())bestaetigung.readText() else ""
                 val versatz=if(datei.exists() && versionsmarke.startsWith('"'))datei.length() else 0L
                 if(versatz==0L && datei.exists())datei.delete()
-                val anforderung=anfrage(d.adresse)
+                val anforderung=anfrage(d.adresse).tag(String::class.java,d.fadenschluessel)
                 if(versatz>0)anforderung.header("Range","bytes=$versatz-").header("If-Range",versionsmarke)
                 antwort(anforderung.build()) {r ->
                     if(r.code==416) {datei.delete();bestaetigung.delete();throw IOException("Ungültiger Teilstand; nächster Versuch beginnt neu")}
@@ -239,6 +279,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
                         val puffer=ByteArray(64*1024)
                         while(true) {
                             currentCoroutineContext().ensureActive()
+                            aktivPruefen(d.fadenschluessel)
                             val n=eingabe.read(puffer);if(n<0)break
                             bilanz.mediumEmpfangen(n.toLong());neuEmpfangen+=n
                             ausgabe.write(puffer,0,n);empfangen+=n
@@ -255,8 +296,9 @@ class Abrufwerk(private val anwendung:Anwendung) {
                 currentCoroutineContext().ensureActive()
                 uebertragungszustand="$titel\n${Fortschrittstext.groesse(datei.length())} geladen · wird geprüft und gespeichert …\n$zusammenfassung"
                 val pruefsummenrechner=MessageDigest.getInstance("SHA-256")
-                datei.inputStream().use {i ->val b=ByteArray(65536);while(true){currentCoroutineContext().ensureActive();val n=i.read(b);if(n<0)break;pruefsummenrechner.update(b,0,n)}}
+                datei.inputStream().use {i ->val b=ByteArray(65536);while(true){currentCoroutineContext().ensureActive();aktivPruefen(d.fadenschluessel);val n=i.read(b);if(n<0)break;pruefsummenrechner.update(b,0,n)}}
                 val pruefsumme=pruefsummenrechner.digest().joinToString(""){"%02x".format(it)}
+                aktivPruefen(d.fadenschluessel)
                 anwendung.archivspeicher.dateiKopieren("${t.faden.ordner}/${d.pfad}",datei,d.medientyp)
                 anwendung.datenbank.abgeschlossen(d,datei.length(),pruefsumme)
                 bilanz.mediumGesichert()
@@ -264,6 +306,10 @@ class Abrufwerk(private val anwendung:Anwendung) {
                 anwendung.datenbank.protokoll("MEDIUM","${t.faden.ordner}: ${Uebertragungsangaben.gespeichert(d.pfad,neuEmpfangen,uebertragungsdauer,datei.length())}")
                 datei.delete();bestaetigung.delete()
             } catch(e:CancellationException) {uebertragungszustand="$titel\nAngehalten · ${Fortschrittstext.groesse(datei.length())} zwischengespeichert\n${anwendung.datenbank.medienzusammenfassung(d.fadenschluessel)}";anwendung.datenbank.protokoll("HINWEIS","Herunterladen angehalten; Teilstand bleibt erhalten");throw e}
+            catch(e:FadenEntfernt) {
+                uebertragungszustand="Faden entfernt · übrige Fäden werden weiterbearbeitet"
+                anwendung.datenbank.protokoll("HINWEIS","${t.faden.ordner}: Download beendet; Teilstand bleibt erhalten")
+            }
             catch(e:Exception) {anwendung.datenbank.fehlgeschlagen(d,e.message.orEmpty(),(e as? HttpFehler)?.antwortnummer in listOf(404,410),(e as? HttpFehler)?.wiederholungMillisekunden ?: 0);anwendung.datenbank.protokoll("FEHLER","Herunterladen ${d.adresse.substringAfterLast('/')}: ${e.message}");uebertragungszustand="$titel\nFehler: ${e.message.orEmpty().take(100)}\n${anwendung.datenbank.medienzusammenfassung(d.fadenschluessel)}"}
             try {wertetabelleSchreiben(d.fadenschluessel)}catch(e:Exception) {anwendung.datenbank.protokoll("FEHLER","CSV: ${e.message}")}
             return true
