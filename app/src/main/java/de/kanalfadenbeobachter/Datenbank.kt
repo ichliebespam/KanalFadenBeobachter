@@ -44,6 +44,7 @@ class Datenbank(umgebung: Context) : SQLiteOpenHelper(umgebung, "archive.db", nu
         } finally { datenbank.endTransaction() }
     }
     fun medienpfade(schluessel:String):Map<String,String> = readableDatabase.rawQuery("SELECT url,path FROM media WHERE thread=?",arrayOf(schluessel)).use {zeilen -> buildMap {while(zeilen.moveToNext())put(zeilen.getString(0),zeilen.getString(1))} }
+    fun abgeschlosseneMedien(schluessel:String):Set<String> = readableDatabase.rawQuery("SELECT url FROM media WHERE thread=? AND status='done'",arrayOf(schluessel)).use {zeilen -> buildSet {while(zeilen.moveToNext())add(zeilen.getString(0))} }
     fun naechsterMedienauftrag(): Medienauftrag? = readableDatabase.rawQuery("SELECT m.* FROM media m JOIN threads t ON t.key=m.thread WHERE t.active=1 AND m.status='pending' AND m.next<=? ORDER BY m.next,m.attempts,m.rowid LIMIT 1",arrayOf(System.currentTimeMillis().toString())).use { c ->
         if(!c.moveToFirst()) null else Medienauftrag(c.getString(c.getColumnIndexOrThrow("thread")),c.getString(c.getColumnIndexOrThrow("url")),c.getString(c.getColumnIndexOrThrow("path")),c.getString(c.getColumnIndexOrThrow("mime")),c.getInt(c.getColumnIndexOrThrow("attempts")),c.getLong(c.getColumnIndexOrThrow("bytes")))
     }

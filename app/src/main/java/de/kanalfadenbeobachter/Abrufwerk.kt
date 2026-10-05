@@ -48,7 +48,7 @@ class Abrufwerk(private val anwendung:Anwendung) {
         val abbruch=launch(start=CoroutineStart.UNDISPATCHED) { try {awaitCancellation()} finally {aufruf.cancel()} }
         try {withContext(Dispatchers.IO) { aufruf.execute().use {verarbeitung(it)} }} finally {abbruch.cancelAndJoin()}
     }
-    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.2 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
+    private fun anfrage(adresse:String)=Request.Builder().url(adresse).header("User-Agent","KanalFadenBeobachter/0.3.3 (Android; privates Fadenarchiv)").header("Accept-Encoding","identity")
     private fun wiederholungMillisekunden(r:Response):Long {
         val h=r.header("Retry-After") ?: return 0
         return h.toLongOrNull()?.coerceIn(0,86400)?.times(1000) ?: runCatching { (java.time.ZonedDateTime.parse(h,DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()-System.currentTimeMillis()).coerceIn(0,86400000) }.getOrDefault(0)
@@ -134,8 +134,11 @@ class Abrufwerk(private val anwendung:Anwendung) {
                             check(zwischenablageDatei.renameTo(zwischengespeichert)) {"Lokaler Fassungsstand nicht sicherbar"}
                             anwendung.archivspeicher.textSchreiben("${t.faden.ordner}/html/${t.faden.ordner}.html",seitentext)
                             anwendung.datenbank.standSichern(stand,jetzt,r.header("ETag").orEmpty(),r.header("Last-Modified").orEmpty())
+                            // Erfolgreich archivierte Medien bleiben erledigt; nur offene Medien am Archiv prüfen.
+                            val abgeschlossene=anwendung.datenbank.abgeschlosseneMedien(t.schluessel)
                             for(medium in stand.medien.distinctBy {it.adresse}) {
                                 currentCoroutineContext().ensureActive()
+                                if(medium.adresse in abgeschlossene)continue
                                 val alt=vorhandene[medium.adresse]
                                 anwendung.datenbank.erwarteteGroesseMerken(t.schluessel,medium.adresse,alt?.groesse ?: 0)
                                 val groesse=anwendung.archivspeicher.vorhandeneGroesse("${t.faden.ordner}/${medium.pfad}",alt?.groesse ?: 0) ?: continue
