@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android") }
 android {
     namespace = "de.kanalfadenbeobachter"
     compileSdk = 36
-    defaultConfig { applicationId = "de.kanalfadenbeobachter"; minSdk = 26; targetSdk = 36; versionCode = 6; versionName = "0.3.1" }
+    defaultConfig { applicationId = "de.kanalfadenbeobachter"; minSdk = 26; targetSdk = 36; versionCode = 7; versionName = "0.3.2" }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     val schluesselpfad = providers.environmentVariable("KANALFADEN_SCHLUESSEL").orNull
